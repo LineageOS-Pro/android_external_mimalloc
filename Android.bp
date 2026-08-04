@@ -1,0 +1,105 @@
+//
+// Copyright (C) 2026 The Android Open Source Project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+
+package {
+    default_applicable_licenses: ["external_mimalloc_license"],
+}
+
+license {
+    name: "external_mimalloc_license",
+    visibility: [":__subpackages__"],
+    license_kinds: [
+        "SPDX-license-identifier-MIT",
+    ],
+    license_text: [
+        "LICENSE",
+    ],
+}
+
+// mimalloc (https://github.com/microsoft/mimalloc, main branch) built as a
+// static library for use by bionic's native allocator dispatch (see
+// bionic/libc/bionic/malloc_common.h).
+//
+// Deliberately NOT defining MI_MALLOC_OVERRIDE: bionic calls the "mi_" prefixed
+// API directly and must keep ownership of the malloc/free symbols.
+cc_library_static {
+    name: "libmimalloc",
+    defaults: ["linux_bionic_supported"],
+    host_supported: false,
+    // mimalloc is a pure C library. Without this, Soong links libc++_static
+    // (the default STL) which depends on libc, creating a dependency cycle
+    // because libc itself links libmimalloc.
+    stl: "none",
+    // Refuse the default system_shared_libs (which includes libc); mimalloc is
+    // linked into libc itself and resolves libc symbols internally. Same as
+    // libjemalloc5.
+    system_shared_libs: [],
+
+    // Provide the bionic headers (pthread.h, etc.) needed to compile mimalloc.
+    header_libs: ["libc_headers"],
+
+    srcs: [
+        "src/alloc.c",
+        "src/alloc-aligned.c",
+        "src/alloc-posix.c",
+        "src/arena.c",
+        "src/bitmap.c",
+        "src/heap.c",
+        "src/init.c",
+        "src/libc.c",
+        "src/options.c",
+        "src/os.c",
+        "src/page.c",
+        "src/random.c",
+        "src/segment.c",
+        "src/segment-map.c",
+        "src/stats.c",
+        "src/prim/prim.c",
+    ],
+
+    cflags: [
+        // Match the optimization level of the previous allocator (scudo is
+        // built with -O3 as well); the default for platform cc modules is -O2.
+        "-O3",
+        // Do not let the compiler turn malloc-family calls into builtins.
+        "-fno-builtin",
+        // Keep the exported symbol surface limited to the "mi_" prefixed API.
+        "-fvisibility=hidden",
+        // mimalloc is linked into libc.so which always lives in the static TLS
+        // block, so initial-exec is both valid and the fastest TLS model.
+        "-ftls-model=initial-exec",
+        "-Wno-unknown-pragmas",
+        // mimalloc embeds __DATE__/__TIME__ in its build string; the platform
+        // build enables -Werror=date-time, downgrade it to a warning.
+        "-Wno-error=date-time",
+        // Android's default allocator (scudo) zero-fills new allocations
+        // (MALLOC_ZERO_CONTENTS) and vendor libraries rely on that behaviour;
+        // mirror it for bionic integration.
+        "-DMI_ZERO_CONTENTS=1",
+    ],
+
+    export_include_dirs: ["include"],
+
+    apex_available: [
+        "com.android.runtime",
+    ],
+    ramdisk_available: true,
+    vendor_ramdisk_available: true,
+    recovery_available: true,
+    vendor_available: true,
+    product_available: true,
+    native_bridge_supported: true,
+}

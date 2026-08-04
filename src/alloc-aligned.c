@@ -11,6 +11,12 @@ terms of the MIT license. A copy of the license can be found in the file
 
 #include <string.h>     // memset
 
+// Android: mirror bionic's scudo MALLOC_ZERO_CONTENTS for aligned allocations
+// too (see the same macro in alloc.c).
+#ifndef MI_ZERO_CONTENTS
+#define MI_ZERO_CONTENTS 0
+#endif
+
 // ------------------------------------------------------
 // Aligned Allocation
 // ------------------------------------------------------
@@ -244,7 +250,8 @@ static inline void* mi_theap_malloc_zero_aligned_at(mi_theap_t* const theap, con
 // ------------------------------------------------------
 
 static mi_decl_restrict void* mi_theap_malloc_aligned_at(mi_theap_t* theap, size_t size, size_t alignment, size_t offset) mi_attr_noexcept {
-  return mi_theap_malloc_zero_aligned_at(theap, size, alignment, offset, false, NULL);
+  // MI_ZERO_CONTENTS mirrors Android's scudo MALLOC_ZERO_CONTENTS (see above).
+  return mi_theap_malloc_zero_aligned_at(theap, size, alignment, offset, MI_ZERO_CONTENTS != 0, NULL);
 }
 
 mi_decl_nodiscard mi_decl_restrict void* mi_theap_malloc_aligned(mi_theap_t* theap, size_t size, size_t alignment) mi_attr_noexcept {

@@ -22,6 +22,13 @@ terms of the MIT license. A copy of the license can be found in the file
 #include "free.c"
 #undef MI_IN_ALLOC_C
 
+// Android: bionic's default allocator (scudo) zero-fills newly allocated
+// memory (MALLOC_ZERO_CONTENTS) and vendor libraries rely on that behaviour.
+// Mirror it when MI_ZERO_CONTENTS is defined (set by the Android.bp build).
+#ifndef MI_ZERO_CONTENTS
+#define MI_ZERO_CONTENTS 0
+#endif
+
 // ------------------------------------------------------
 // Allocation
 // ------------------------------------------------------
@@ -244,7 +251,8 @@ void* _mi_theap_malloc_zero(mi_theap_t* theap, size_t size, bool zero, size_t* u
 // Main allocation functions
 
 mi_decl_nodiscard extern inline mi_decl_restrict void* mi_theap_malloc(mi_theap_t* theap, size_t size) mi_attr_noexcept {
-  return _mi_theap_malloc_zero(theap, size, false, NULL);
+  // MI_ZERO_CONTENTS mirrors Android's scudo MALLOC_ZERO_CONTENTS (see above).
+  return _mi_theap_malloc_zero(theap, size, MI_ZERO_CONTENTS != 0, NULL);
 }
 
 mi_decl_nodiscard mi_decl_restrict void* mi_malloc(size_t size) mi_attr_noexcept {
@@ -252,7 +260,8 @@ mi_decl_nodiscard mi_decl_restrict void* mi_malloc(size_t size) mi_attr_noexcept
 }
 
 mi_decl_nodiscard mi_decl_restrict void* mi_heap_malloc(mi_heap_t* heap, size_t size) mi_attr_noexcept {
-  return mi_theap_malloc_zero_nonnull(_mi_heap_theap(heap), size, false, 0, NULL);
+  // MI_ZERO_CONTENTS mirrors Android's scudo MALLOC_ZERO_CONTENTS (see above).
+  return mi_theap_malloc_zero_nonnull(_mi_heap_theap(heap), size, MI_ZERO_CONTENTS != 0, 0, NULL);
 }
 
 
