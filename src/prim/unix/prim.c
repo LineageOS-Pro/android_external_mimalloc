@@ -128,7 +128,12 @@ static inline int mi_prim_access(const char *fpath, int mode) {
 
 static bool unix_detect_overcommit(void) {
   bool os_overcommit = true;
-  #if defined(__linux__)
+#if defined(__ANDROID__)
+  // Android enables memory overcommit by default. SELinux blocks reads of
+  // /proc/sys/vm/overcommit_memory for unprivileged domains, which would
+  // trigger avc denials from every process during malloc init. Assume
+  // overcommit is enabled and skip the probe.
+#elif defined(__linux__)
     int fd = mi_prim_open("/proc/sys/vm/overcommit_memory", O_RDONLY);
     if (fd >= 0) {
       char buf[32];
@@ -140,15 +145,15 @@ static bool unix_detect_overcommit(void) {
         os_overcommit = (buf[0] == '0' || buf[0] == '1');
       }
     }
-  #elif defined(__FreeBSD__)
+#elif defined(__FreeBSD__)
     int val = 0;
     size_t olen = sizeof(val);
     if (sysctlbyname("vm.overcommit", &val, &olen, NULL, 0) == 0) {
       os_overcommit = (val != 0);
     }
-  #else
+#else
     // default: overcommit is true
-  #endif
+#endif
   return os_overcommit;
 }
 
