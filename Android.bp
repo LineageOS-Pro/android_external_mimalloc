@@ -56,7 +56,6 @@ cc_library_static {
         "src/alloc-aligned.c",
         "src/alloc-posix.c",
         "src/arena.c",
-        "src/arena-meta.c",
         "src/bitmap.c",
         "src/heap.c",
         "src/init.c",
@@ -67,9 +66,11 @@ cc_library_static {
         "src/page-map.c",
         "src/random.c",
         "src/stats.c",
+        "src/subproc.c",
         "src/theap.c",
         "src/threadlocal.c",
         "src/prim/prim.c",
+        "src/prim/prim-tls.c",
     ],
 
     cflags: [
