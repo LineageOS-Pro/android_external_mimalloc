@@ -12,12 +12,11 @@ terms of the MIT license. A copy of the license can be found in the file
 #include <string.h>  // memcpy, memset
 #include <stdlib.h>  // atexit
 
-
-#define MI_MEMID_INIT(kind)   {{{NULL,0}}, kind, true /* pinned */, true /* committed */, false /* zero */ }
-#define MI_MEMID_STATIC       MI_MEMID_INIT(MI_MEM_STATIC)
-
 // Empty page used to initialize the small free pages array
 static const mi_page_t mi_page_empty = {
+  #if MI_PAGE_META_IS_ALIGNED
+  MI_ATOMIC_VAR_INIT(NULL),  // self
+  #endif
   MI_ATOMIC_VAR_INIT(0),  // xthread_id
   NULL,                   // free
   0,                      // used
@@ -27,7 +26,7 @@ static const mi_page_t mi_page_empty = {
   NULL,                   // local_free
   MI_ATOMIC_VAR_INIT(0),  // xthread_free
   0,                      // block_size
-  0,                      // page_ma_offset
+  0,                      // page_zoffset
   0,                      // slice_pcommitted
   0,                      // reserved capacity
   NULL,                   // theap
@@ -35,18 +34,32 @@ static const mi_page_t mi_page_empty = {
   NULL, NULL,             // next, prev
   MI_MEMID_STATIC,        // memid
   #if (MI_PADDING || MI_ENCODE_FREELIST)
-  { 0, 0 }                // keys
+  #if MI_PAGE_KEY_COUNT==2
+  { 0, 0 },               // keys
+  #else
+  { 0 },                  // key
+  #endif
+  #elif MI_PAGE_META_IS_ALIGNED && MI_INTPTR_SIZE==8
+  { 0 },                  // padding 
   #endif
 };
 
 #define MI_PAGE_EMPTY() ((mi_page_t*)&mi_page_empty)
 
-#if (MI_PADDING>0) && (MI_INTPTR_SIZE >= 8)
-#define MI_SMALL_PAGES_EMPTY  { MI_INIT128(MI_PAGE_EMPTY), MI_PAGE_EMPTY(), MI_PAGE_EMPTY() }
-#elif (MI_PADDING>0)
-#define MI_SMALL_PAGES_EMPTY  { MI_INIT128(MI_PAGE_EMPTY), MI_PAGE_EMPTY(), MI_PAGE_EMPTY(), MI_PAGE_EMPTY() }
+#if MI_SMALL_WSIZE_MAX == 128
+#define MI_INIT_PAGES_DIRECT(p)  MI_INIT128(p)
+#elif MI_SMALL_WSIZE_MAX == 256
+#define MI_INIT_PAGES_DIRECT(p)  MI_INIT128(p), MI_INIT128(p)
 #else
-#define MI_SMALL_PAGES_EMPTY  { MI_INIT128(MI_PAGE_EMPTY), MI_PAGE_EMPTY() }
+#error define initializer for direct pages
+#endif
+
+#if (MI_PADDING>0) && (MI_INTPTR_SIZE >= 8)
+#define MI_SMALL_PAGES_EMPTY  { MI_INIT_PAGES_DIRECT(MI_PAGE_EMPTY), MI_PAGE_EMPTY(), MI_PAGE_EMPTY() }
+#elif (MI_PADDING>0)
+#define MI_SMALL_PAGES_EMPTY  { MI_INIT_PAGES_DIRECT(MI_PAGE_EMPTY), MI_PAGE_EMPTY(), MI_PAGE_EMPTY(), MI_PAGE_EMPTY() }
+#else
+#define MI_SMALL_PAGES_EMPTY  { MI_INIT_PAGES_DIRECT(MI_PAGE_EMPTY), MI_PAGE_EMPTY() }
 #endif
 
 
@@ -565,6 +578,10 @@ static void mi_process_init_once(void) {
       mi_reserve_os_memory((size_t)ksize*MI_KiB, true, true);
     }
   }
+
+  #if MI_PAGE_META_IS_ALIGNED
+  mi_assert_internal((sizeof(mi_page_t)%MI_SIZE_SIZE) == 0);  // or page->zoffset might not work
+  #endif
 }
 
 // Initialize the process; called by thread_init or the process loader
@@ -618,7 +635,7 @@ static void mi_process_done_once(void) {
         _mi_theap_merge_stats(subproc_main->theap_meta);
         _mi_theap_merge_stats(_mi_theap_default());  // _mi_thread_locals_done can free
         mi_heap_stats_merge_to_subproc(subproc_main->heap_main);
-        mi_subproc_stats_print_out(mi_subproc_main(), NULL, NULL);
+        mi_subproc_stats_print_out(mi_subproc_main(), NULL, NULL); // note: can try to access (the now freed) thread_locals in mi_heap_theap_peek
       }
     }
   }
@@ -626,7 +643,7 @@ static void mi_process_done_once(void) {
   _mi_tls_slots_done();
   _mi_subproc_main_done();
   _mi_allocator_done();
-  _mi_verbose_message("process done\n"); // : 0x%zx\n", mi_process_tld_main.thread_id);
+  _mi_verbose_message("process done %zu\n", sizeof(mi_page_t)); // : 0x%zx\n", mi_process_tld_main.thread_id);
   os_preloading = true; // don't call the C runtime anymore
 }
 

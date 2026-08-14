@@ -55,7 +55,7 @@ static mi_thread_locals_t mi_thread_locals_empty = mi_init_struct_zero;
 #define mi_define_thread_local(tp,name,initval) \
   static mi_decl_thread tp __##name = initval; \
   static inline tp   name##_peek(void)    { return __##name; } \
-  static inline tp   name##_get(void)     { return __##name; } \
+  static inline tp   name##_get(void)     { tp result = __##name; return (result!=NULL ? result : initval); } \
   static inline bool name##_set(tp val)   { __##name = val; return true; } \
   static inline void name##_delete(void)  {  }
 #endif
@@ -175,8 +175,13 @@ bool _mi_thread_local_set( mi_thread_local_t key, void* val ) {
 // get a tls slot value
 static mi_decl_noinline void* mi_thread_local_get_regular( mi_thread_local_t key ) {
   mi_assert_internal(key!=0);
-  const mi_thread_locals_t* const tls = mi_thread_locals_get();
-  mi_assert_internal(tls!=NULL);
+  const mi_thread_locals_t* const tls = mi_thread_locals_peek();
+  if mi_unlikely(tls==NULL) {
+    // this can happen if a thread local is accessed after the thread local has been freed
+    // from mi_thread_done or mi_process_done.
+    // todo: can we remove this check? now we can still call this from process done when stats are printed (which calls mi_heap_theap_peek)
+    return NULL;
+  }
   const size_t idx = mi_key_index(key);
   if mi_likely(idx < tls->count && mi_key_version(key) == tls->slots[idx].version) {
     return tls->slots[idx].value;

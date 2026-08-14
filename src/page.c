@@ -411,7 +411,8 @@ void _mi_page_free(mi_page_t* page, mi_page_queue_t* pq) {
   // _mi_arenas_collect(false, false, theap->tld);  // allow purging
 }
 
-#define MI_RETIRE_CYCLES      (16)
+#define MI_RETIRE_CYCLES      (16)      /* keep a retired page around for about 16 "cycles" before free'ing it */
+#define MI_RETIRE_MAX_PAGES   (3)       /* keep at most N pages per size bin as retired */
 
 // Retire a page with no more used blocks
 // Important to not retire too quickly though as new
@@ -438,11 +439,9 @@ void _mi_page_retire(mi_page_t* page) mi_attr_noexcept {
   #if MI_RETIRE_CYCLES > 0
   const size_t bsize = mi_page_block_size(page);
   if mi_likely( /* bsize < MI_MAX_RETIRE_SIZE && */ !mi_page_queue_is_special(pq)) {  // not full or huge queue?
-    if (pq->last==page && pq->first==page) { // the only page in the queue?
+    if (pq->count <= MI_RETIRE_MAX_PAGES) { // at most N pages left?  // pq->last==page && pq->first==page) { // the only page in the queue?
       mi_theap_t* theap = mi_page_theap(page);
-      #if MI_STAT>0
       mi_theap_stat_counter_increase(theap, pages_retire, 1);
-      #endif
       page->retire_expire = (bsize <= MI_SMALL_MAX_OBJ_SIZE ? MI_RETIRE_CYCLES : MI_RETIRE_CYCLES/4);
       mi_assert_internal(pq >= theap->pages);
       const size_t index = pq - theap->pages;
@@ -479,29 +478,35 @@ static void mi_theap_collect_full_pages(mi_theap_t* theap) {
   }
 }
 
+static void mi_page_try_retire(mi_page_queue_t* pq, mi_page_t* page, size_t bin, bool force, size_t* min, size_t* max) {    
+  if (mi_page_all_free(page)) {
+    page->retire_expire--;
+    if (page->retire_expire == 0 || force) {
+      _mi_page_free(page, pq);
+    }
+    else {
+      // keep retired, update min/max
+      if (bin < *min) *min = bin;
+      if (bin > *max) *max = bin;
+    }
+  }
+  else {
+    page->retire_expire = 0;
+  }  
+}
+
 // free retired pages: we don't need to look at the entire queues
 // since we only retire pages that are at the head position in a queue.
 void _mi_theap_collect_retired(mi_theap_t* theap, bool force) {
   size_t min = MI_BIN_FULL;
   size_t max = 0;
   for(size_t bin = theap->page_retired_min; bin <= theap->page_retired_max; bin++) {
-    mi_page_queue_t* pq   = &theap->pages[bin];
-    mi_page_t*       page = pq->first;
-    if (page != NULL && page->retire_expire != 0) {
-      if (mi_page_all_free(page)) {
-        page->retire_expire--;
-        if (page->retire_expire == 0 || force) {
-          _mi_page_free(page, pq);
-        }
-        else {
-          // keep retired, update min/max
-          if (bin < min) min = bin;
-          if (bin > max) max = bin;
-        }
-      }
-      else {
-        page->retire_expire = 0;
-      }
+    mi_page_queue_t* pq  = &theap->pages[bin];
+    mi_page_t* page      = pq->first;
+    for (int i = 0; i<MI_RETIRE_MAX_PAGES && page!=NULL && page->retire_expire==0; i++) {
+      mi_page_t* next = page-> next;
+      mi_page_try_retire(pq,page,bin,force,&min,&max);
+      page = next;
     }
   }
   theap->page_retired_min = min;
@@ -609,7 +614,7 @@ static mi_decl_noinline void mi_page_free_list_extend( mi_page_t* const page, co
   Page initialize and extend the capacity
 ----------------------------------------------------------- */
 
-#define MI_MAX_EXTEND_SIZE    (4*1024)      // heuristic, one OS page seems to work well.
+#define MI_MAX_EXTEND_SIZE    (8*1024)      // heuristic, one or two OS pages seems to work well.
 #if (MI_SECURE>=2)
 #define MI_MIN_EXTEND         (8*MI_SECURE) // extend at least by this many
 #else
@@ -713,7 +718,9 @@ mi_decl_nodiscard bool _mi_page_init(mi_theap_t* theap, mi_page_t* page) {
   mi_assert_internal(page->reserved > 0);
   #if (MI_PADDING || MI_ENCODE_FREELIST)
   page->keys[0] = _mi_theap_random_next(theap);
+  #if MI_PAGE_KEY_COUNT==2
   page->keys[1] = _mi_theap_random_next(theap);
+  #endif
   #endif
   #if MI_DEBUG>2
   if (page->memid.initially_zero) {
@@ -737,7 +744,9 @@ mi_decl_nodiscard bool _mi_page_init(mi_theap_t* theap, mi_page_t* page) {
   mi_assert_internal(!mi_page_has_interior_pointers(page));
   #if (MI_PADDING || MI_ENCODE_FREELIST)
   mi_assert_internal(page->keys[0] != 0);
+  #if MI_PAGE_KEY_COUNT==2
   mi_assert_internal(page->keys[1] != 0);
+  #endif
   #endif
   mi_assert_expensive(mi_page_is_valid_init(page));
 

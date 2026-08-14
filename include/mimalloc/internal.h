@@ -331,7 +331,9 @@ mi_block_t*   _mi_page_ptr_unalign(const mi_page_t* page, const void* p);
 void          _mi_padding_shrink(const mi_page_t* page, const mi_block_t* block, const size_t min_size);
 
 // "free.c"
-void          _mi_free_subproc_safe(void* p);
+void          _mi_free_in_page_nonnull(void* p, mi_page_t* page) mi_attr_noexcept;
+void          _mi_free_subproc_safe_in_page_nonnull(void* p, mi_page_t* page) mi_attr_noexcept;
+void          _mi_free_subproc_safe(void* p) mi_attr_noexcept;
 void          _mi_page_unguard_all(mi_page_t* page);
 size_t        _mi_page_usable_size(const mi_page_t* page, const void* p) mi_attr_noexcept;
 
@@ -715,8 +717,15 @@ static inline mi_page_t* _mi_unchecked_ptr_page(const void* p) {
 #define MI_PAGE_MAP_SHIFT         (MI_MAX_VABITS - MI_PAGE_MAP_SUB_SHIFT - MI_ARENA_SLICE_SHIFT)
 
 typedef mi_page_t**   mi_submap_t;
-extern mi_decl_hidden _Atomic(mi_submap_t)* _mi_page_map;
-extern mi_decl_hidden _Atomic(void*) _mi_page_map_max_address;
+typedef struct mi_page_map_s {  
+  _Atomic(size_t)      committed_count;  // currently committed entries
+  size_t               reserved_size;    // full reserved size (mi_page_map_t + submaps)
+  mi_memid_t           memid;            // provenance
+  mi_lock_t            lock;             // used when allocating new submaps
+  _Atomic(mi_submap_t) submaps[1];
+} mi_page_map_t;
+
+extern mi_decl_hidden _Atomic(mi_page_map_t*) __mi_page_map;
 
 static inline size_t _mi_page_map_index(const void* p, size_t* sub_idx) {
   const size_t u = (size_t)((uintptr_t)p / MI_ARENA_SLICE_SIZE);
@@ -724,37 +733,67 @@ static inline size_t _mi_page_map_index(const void* p, size_t* sub_idx) {
   return (u / MI_PAGE_MAP_SUB_COUNT);
 }
 
-static inline mi_submap_t _mi_page_map_at(size_t idx) {
-  return mi_atomic_load_ptr_relaxed(mi_page_t*, &_mi_page_map[idx]);
+static inline mi_page_map_t* _mi_page_map(void) {
+  return mi_atomic_load_ptr_relaxed(mi_page_map_t,&__mi_page_map);
+}
+
+static inline mi_submap_t _mi_page_map_at(const mi_page_map_t* pmap, size_t idx) {
+  return mi_atomic_load_ptr_relaxed(mi_page_t*, &pmap->submaps[idx]);
 }
 
 static inline mi_page_t* _mi_unchecked_ptr_page(const void* p) {
+  const mi_page_map_t* pmap = _mi_page_map();
   size_t sub_idx;
   const size_t idx = _mi_page_map_index(p, &sub_idx);
-  return (_mi_page_map_at(idx))[sub_idx];  // NULL if p==NULL
+  return _mi_page_map_at(pmap,idx)[sub_idx];  // NULL if p==NULL
 }
 
 static inline mi_page_t* _mi_checked_ptr_page(const void* p) {
-  #if MI_MIN_VABITS < MI_INTPTR_BITS
-  if mi_unlikely(((uintptr_t)p >> MI_MIN_VABITS) != 0) {
-    if (p > mi_atomic_load_ptr_relaxed(void, &_mi_page_map_max_address)) return NULL;
-  }
-  #endif
+  const mi_page_map_t* pmap = _mi_page_map();
   size_t sub_idx;
   const size_t idx = _mi_page_map_index(p, &sub_idx);
-  mi_submap_t const sub = _mi_page_map_at(idx);
+  const size_t committed_count = mi_atomic_load_relaxed(&pmap->committed_count);    
+  if mi_unlikely(idx >= committed_count) return NULL;
+  // #if MI_MIN_VABITS < MI_INTPTR_BITS   // is still invalid if free is called before the pagemap is initialized
+  // if mi_unlikely(((uintptr_t)p >> MI_MIN_VABITS) != 0) {  
+  //   const size_t committed_count = mi_atomic_load_relaxed(&pmap->committed_count);      
+  //   if mi_unlikely(idx >= committed_count) return NULL;
+  // }   
+  // #endif
+  mi_submap_t const sub = _mi_page_map_at(pmap,idx);
   if mi_unlikely(sub == NULL) return NULL;
   return sub[sub_idx];
 }
 
 #endif
 
+#if MI_PAGE_META_IS_ALIGNED
+// if the page meta data is aligned in front of pages we can find it efficiently
+// without needing to go through the page map (for valid pointers).
+static inline mi_page_t* _mi_aligned_ptr_page0(const void* p) {
+  mi_page_t* const page_metas = (mi_page_t*)_mi_align_down_ptr(p,MI_PAGE_META_ALIGNMENT);
+  const ptrdiff_t page_idx = ((uint8_t*)p - (uint8_t*)page_metas)/MI_ARENA_SLICE_SIZE;
+  mi_assert_internal(page_idx >= 0 && page_idx <= MI_PAGE_META_ALIGNED_COUNT);
+  return &page_metas[page_idx];
+}
+
+static inline mi_page_t* _mi_aligned_ptr_page(const void* p) {
+  mi_page_t* const page = _mi_aligned_ptr_page0(p);
+  if mi_unlikely(page==NULL) return NULL;
+  return mi_atomic_load_relaxed(&page->self);
+}
+#endif
+
 static inline mi_page_t* _mi_ptr_page(const void* p) {
   mi_assert_internal(p==NULL || mi_is_in_heap_region(p));
-  #if MI_DEBUG || MI_SECURE || MI_FREE_IS_CHECKED
-  return _mi_checked_ptr_page(p);
-  #else
-  return _mi_unchecked_ptr_page(p);
+  #if MI_SECURE || MI_FREE_IS_CHECKED
+    return _mi_checked_ptr_page(p);
+  #elif MI_PAGE_META_IS_ALIGNED
+    return _mi_aligned_ptr_page(p);
+  #elif MI_DEBUG
+    return _mi_checked_ptr_page(p);
+  #else  
+    return _mi_unchecked_ptr_page(p);
   #endif
 }
 
@@ -767,8 +806,8 @@ static inline size_t mi_page_block_size(const mi_page_t* page) {
 
 // Page start
 static inline uint8_t* mi_page_start(const mi_page_t* page) {
-  // multiplication must be done in `size_t`; in a 32-bit multiplication the offset wraps for pages whose blocks start 4 GiB or more after the page meta info
-  return (uint8_t*)page + (((size_t)page->page_ma_offset) * MI_MAX_ALIGN_SIZE);
+  // multiplication must be done in `size_t`
+  return (uint8_t*)page + (((size_t)page->page_zoffset) * MI_SIZE_SIZE);
 }
 
 static inline size_t mi_page_size(const mi_page_t* page) {
@@ -805,8 +844,12 @@ static inline size_t mi_page_usable_block_size(const mi_page_t* page) {
 }
 
 static inline bool mi_page_meta_is_separated(const mi_page_t* page) {
-  #if MI_PAGE_META_IS_SEPARATED
-  // usually separated but can still be in front for direct OS allocations (due to size or alignment) or due to MI_PAGE_META_ALIGNED_FREE_SMALL
+  #if MI_PAGE_META_IS_ALIGNED
+  MI_UNUSED_RELEASE(page);
+  mi_assert_internal(page != _mi_align_down_ptr(mi_page_start(page), MI_ARENA_SLICE_ALIGN));  
+  return true;
+  #elif MI_PAGE_META_IS_SEPARATED
+  // usually separated but can still be in front for direct OS allocations (due to size or alignment) or due to MI_PAGE_META_SMALL_IS_ALIGNED
   return (page->memid.memkind == MI_MEM_ARENA && page != _mi_align_down_ptr(mi_page_start(page), MI_ARENA_SLICE_ALIGN));
   #else
   MI_UNUSED(page);
@@ -1150,23 +1193,44 @@ static inline bool mi_is_in_same_page(const void* p, const void* q) {
 }
 
 static inline void* mi_ptr_decode(const void* null, const mi_encoded_t x, const uintptr_t* keys) {
-  void* p = (void*)(mi_rotr(x - keys[0], keys[0]) ^ keys[1]);
+  const uintptr_t k1 = keys[0];
+  #if MI_PAGE_KEY_COUNT==2
+  const uintptr_t k2 = keys[1];
+  #else
+  const uintptr_t k2 = mi_rotr(k1,13);
+  #endif
+  void* p = (void*)(mi_rotr(x - k1, k1) ^ k2);
   return (p==null ? NULL : p);
 }
 
 static inline mi_encoded_t mi_ptr_encode(const void* null, const void* p, const uintptr_t* keys) {
-  uintptr_t x = (uintptr_t)(p==NULL ? null : p);
-  return mi_rotl(x ^ keys[1], keys[0]) + keys[0];
+  const uintptr_t k1 = keys[0];
+  #if MI_PAGE_KEY_COUNT==2
+  const uintptr_t k2 = keys[1];
+  #else
+  const uintptr_t k2 = mi_rotr(k1,13);
+  #endif
+  const uintptr_t x = (uintptr_t)(p==NULL ? null : p);  
+  return mi_rotl(x ^ k2, k1) + k1;
 }
 
 static inline uint32_t mi_ptr_encode_canary(const void* null, const void* p, const uintptr_t* keys) {
   const uint32_t x = (uint32_t)(mi_ptr_encode(null,p,keys));
   // make the lowest byte 0 to prevent spurious read overflows which could be a security issue (issue #951)
+  // also clear bit 9 which we set only when a block is freed.
   #if MI_BIG_ENDIAN
-  return (x & 0x00FFFFFF);
+  return (x & 0x00FFFEFF);
   #else
-  return (x & 0xFFFFFF00);
+  return (x & 0xFFFFFE00);
   #endif
+}
+
+static inline uint32_t mi_ptr_encode_canary_freed(void) {
+  return (0x00DEAD00);  // set bit 9 so it is different from any valid canary
+}
+
+static inline bool mi_ptr_decode_canary_is_freed(uint32_t canary) {
+  return (canary == mi_ptr_encode_canary_freed());
 }
 
 static inline mi_block_t* mi_block_nextx( const void* null, const mi_block_t* block, const uintptr_t* keys ) {
@@ -1193,14 +1257,15 @@ static inline void mi_block_set_nextx(const void* null, mi_block_t* block, const
   mi_track_mem_noaccess(block,sizeof(mi_block_t));
 }
 
+mi_block_t* _mi_block_next_is_corrupted(const mi_page_t* page, const mi_block_t* block, const mi_block_t* next); // in options.c
+
 static inline mi_block_t* mi_block_next(const mi_page_t* page, const mi_block_t* block) {
   #if MI_ENCODE_FREELIST
   mi_block_t* next = mi_block_nextx(page,block,page->keys);
   // check for free list corruption: is `next` at least in the same page?
   // todo: check if `next` is `page->block_size` aligned?
-  if mi_unlikely(next!=NULL && !mi_is_in_same_page(block, next)) {
-    _mi_error_message(EFAULT, "corrupted free list entry of size %zub at %p: value 0x%zx\n", mi_page_block_size(page), block, (uintptr_t)next);
-    next = NULL;
+  if mi_unlikely(next!=NULL && !mi_page_contains_address(page,next)) {
+    return _mi_block_next_is_corrupted(page,block,next); // returns NULL
   }
   return next;
   #else
