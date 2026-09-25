@@ -102,7 +102,7 @@ bool _mi_subproc_is_main(mi_subproc_t* subproc) {
 
 mi_subproc_t* _mi_subproc(void) {
   mi_theap_t* theap = _mi_theap_default();
-  if (theap == NULL || theap->tld == NULL) {  // see issue #1289
+  if (theap == NULL || theap->tld == NULL || theap->tld->subproc == NULL) {  // see issue #1289 and #1391
     return _mi_subproc_main();
   }
   else {
@@ -188,6 +188,7 @@ mi_subproc_id_t mi_subproc_new(void) {
   mi_assert_internal(parent->theap_meta->tld!=NULL);
   mi_assert_internal(parent->theap_meta->tld->thread_id == MI_THREADID_DETACHED);
   _mi_theap_init(theap_meta,heap_main,parent->theap_meta->tld /* detached tld */);
+  _mi_theap_profile_disable(theap_meta);  // permanently exclude from profiling, see `_mi_theap_profile_disable`
   subproc->theap_meta = theap_meta;
 
   return _mi_subproc_to_id(subproc);
@@ -228,8 +229,8 @@ static void mi_subproc_unsafe_destroy(mi_subproc_t* subproc, bool acquire_subpro
     }
   }
 
-  subproc->theap_meta = NULL; // theap meta stats are merged during heap_destroy of the main heap
-
+  subproc->theap_meta = NULL;     // theap meta stats are merged during heap_destroy of the main heap
+  
   if (!_mi_subproc_is_main(subproc)) {
     // merge stats back into the main subproc  
     _mi_stats_merge_into(&mi_process_subproc_main.stats, &subproc->stats);

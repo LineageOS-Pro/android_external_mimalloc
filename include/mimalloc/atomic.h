@@ -93,13 +93,17 @@ terms of the MIT license. A copy of the license can be found in the file
 #define mi_atomic_or_relaxed(p,x)                mi_atomic(fetch_or_explicit)(p,x,mi_memory_order(relaxed))
 #define mi_atomic_or_acq_rel(p,x)                mi_atomic(fetch_or_explicit)(p,x,mi_memory_order(acq_rel))
 
-#define mi_atomic_increment_relaxed(p)           mi_atomic_add_relaxed(p,(uintptr_t)1)
-#define mi_atomic_decrement_relaxed(p)           mi_atomic_sub_relaxed(p,(uintptr_t)1)
-#define mi_atomic_increment_acq_rel(p)           mi_atomic_add_acq_rel(p,(uintptr_t)1)
-#define mi_atomic_decrement_acq_rel(p)           mi_atomic_sub_acq_rel(p,(uintptr_t)1)
+#define mi_atomic_increment_relaxed(p)           mi_atomic_add_relaxed(p,(size_t)1)
+#define mi_atomic_decrement_relaxed(p)           mi_atomic_sub_relaxed(p,(size_t)1)
+#define mi_atomic_increment_acq_rel(p)           mi_atomic_add_acq_rel(p,(size_t)1)
+#define mi_atomic_decrement_acq_rel(p)           mi_atomic_sub_acq_rel(p,(size_t)1)
 
-static inline intptr_t mi_atomic_addi(_Atomic(intptr_t)*p, intptr_t add);
-static inline intptr_t mi_atomic_subi(_Atomic(intptr_t)*p, intptr_t sub);
+static inline mi_ssize_t mi_atomic_addi_acq_rel(_Atomic(mi_ssize_t)*p, mi_ssize_t add);
+static inline mi_ssize_t mi_atomic_subi_acq_rel(_Atomic(mi_ssize_t)*p, mi_ssize_t sub);
+static inline mi_ssize_t mi_atomic_addi_relaxed(_Atomic(mi_ssize_t)*p, mi_ssize_t add);
+static inline mi_ssize_t mi_atomic_subi_relaxed(_Atomic(mi_ssize_t)*p, mi_ssize_t sub);
+static inline void       mi_atomic_storess_relaxed(_Atomic(mi_ssize_t)* p, mi_ssize_t x);
+static inline mi_ssize_t mi_atomic_loads_relaxed(_Atomic(mi_ssize_t)* p);
 
 
 #if defined(__cplusplus) || !defined(_MSC_VER)
@@ -133,16 +137,16 @@ static inline intptr_t mi_atomic_subi(_Atomic(intptr_t)*p, intptr_t sub);
 #endif
 
 // These are used by the statistics
-static inline int64_t mi_atomic_addi64_relaxed(volatile int64_t* p, int64_t add) {
+static inline int64_t mi_atomic_volatile_addi64_relaxed(volatile int64_t* p, int64_t add) {
   return mi_atomic(fetch_add_explicit)((_Atomic(int64_t)*)p, add, mi_memory_order(relaxed));
 }
-static inline void mi_atomic_void_addi64_relaxed(volatile int64_t* p, const volatile int64_t* padd) {
+static inline void mi_atomic_volatile_void_addi64_relaxed(volatile int64_t* p, const volatile int64_t* padd) {
   const int64_t add = mi_atomic_load_relaxed((_Atomic(int64_t)*)padd);
   if (add != 0) {
     mi_atomic(fetch_add_explicit)((_Atomic(int64_t)*)p, add, mi_memory_order(relaxed));
   }
 }
-static inline void mi_atomic_maxi64_relaxed(volatile int64_t* p, int64_t x) {
+static inline void mi_atomic_volatile_maxi64_relaxed(volatile int64_t* p, int64_t x) {
   int64_t current = mi_atomic_load_relaxed((_Atomic(int64_t)*)p);
   while (current < x && !mi_atomic_cas_weak_release((_Atomic(int64_t)*)p, &current, x)) { /* nothing */ };
 }
@@ -155,6 +159,7 @@ static inline void mi_atomic_maxi64_relaxed(volatile int64_t* p, int64_t x) {
 
 #define mi_atomic_casi64_strong_acq_rel(p,e,d)  mi_atomic_cas_strong_acq_rel(p,e,d)
 #define mi_atomic_addi64_acq_rel(p,i)           mi_atomic_add_acq_rel(p,i)
+#define mi_atomic_addi64_relaxed(p,i)           mi_atomic_add_relaxed(p,i)
 
 
 #elif defined(_MSC_VER)
@@ -227,9 +232,11 @@ static inline uintptr_t mi_atomic_load_explicit(_Atomic(uintptr_t) const* p, mi_
     if (mo == mi_memory_order_relaxed) {
       return (uintptr_t)MI_MSC_XX(__iso_volatile_load)((volatile const intptr_t*)p);
     }
+    #if !defined(__clang__) // work around __ldar missing in clang-cl, see https://github.com/llvm/llvm-project/issues/121689
     else if (mo <= mi_memory_order_acquire) {
       return MI_MSC_XX(__ldar)((volatile const uintptr_t*)p);
     }
+    #endif
     else {
       const uintptr_t u = (uintptr_t)MI_MSC_XX(__iso_volatile_load)((volatile const intptr_t*)p);
       __dmb(15);  // _ARM(64)_BARRIER_SY
@@ -249,9 +256,11 @@ static inline void mi_atomic_store_explicit(_Atomic(uintptr_t)*p, uintptr_t x, m
     if (mo == mi_memory_order_relaxed) {
       MI_MSC_XX(__iso_volatile_store)((volatile intptr_t*)p, x);
     }
+    #if !defined(__clang__) // work around __stlr missing in clang-cl, see https://github.com/llvm/llvm-project/issues/121689
     else if (mo <= mi_memory_order_release) {
       MI_MSC_XX(__stlr)((volatile uintptr_t*)p,x);
     }
+    #endif
     else {
       mi_atomic_exchange_explicit(p, x, mo);
     }
@@ -269,7 +278,7 @@ static inline int64_t mi_atomic_loadi64_explicit(_Atomic(int64_t)*p, mi_memory_o
     if (mo == mi_memory_order_relaxed) {
       return __iso_volatile_load64((volatile const int64_t*)p);
     }
-    #if defined(_M_ARM64)
+    #if defined(_M_ARM64) && !defined(__clang__) // work around __ldar64 missing in clang-cl, see https://github.com/llvm/llvm-project/issues/121689
     else if (mo <= mi_memory_order_acquire) {
       return __ldar64((volatile const uintptr_t*)p);
     }
@@ -294,7 +303,7 @@ static inline void mi_atomic_storei64_explicit(_Atomic(int64_t)*p, int64_t x, mi
     if (mo == mi_memory_order_relaxed) {
       __iso_volatile_store64((volatile int64_t*)p,x);
     }
-    #if defined(_M_ARM64)
+    #if defined(_M_ARM64) && !defined(__clang__) // work around __stlr64 missing in clang-cl, see https://github.com/llvm/llvm-project/issues/121689
     else if (mo == mi_memory_order_release) {
       __stlr64((volatile uint64_t*)p, (uint64_t)x);
     }
@@ -308,9 +317,9 @@ static inline void mi_atomic_storei64_explicit(_Atomic(int64_t)*p, int64_t x, mi
 }
 
 // These are used by the statistics
-static inline int64_t mi_atomic_addi64_relaxed(volatile _Atomic(int64_t)*p, int64_t add) {
+static inline int64_t mi_atomic_volatile_addi64_relaxed(volatile _Atomic(int64_t)*p, int64_t add) {
   #ifdef _WIN64
-    return (int64_t)mi_atomic_addi((int64_t*)p, add);
+    return (int64_t)mi_atomic_addi_relaxed((_Atomic(int64_t)*)p, add);
   #elif defined(_M_ARM)
     return _InterlockedExchangeAdd64(p, add);
   #else
@@ -325,14 +334,14 @@ static inline int64_t mi_atomic_addi64_relaxed(volatile _Atomic(int64_t)*p, int6
   #endif
 }
 
-static inline void mi_atomic_void_addi64_relaxed(volatile int64_t* p, const volatile int64_t* padd) {
+static inline void mi_atomic_volatile_void_addi64_relaxed(volatile int64_t* p, const volatile int64_t* padd) {
   const int64_t add = *padd;
   if (add != 0) {
-    mi_atomic_addi64_relaxed((volatile _Atomic(int64_t)*)p, add);
+    mi_atomic_volatile_addi64_relaxed((volatile _Atomic(int64_t)*)p, add);
   }
 }
 
-static inline void mi_atomic_maxi64_relaxed(volatile _Atomic(int64_t)* p, int64_t x) {
+static inline void mi_atomic_volatile_maxi64_relaxed(volatile _Atomic(int64_t)* p, int64_t x) {
   int64_t current;
   do {
     current = *p;
@@ -340,7 +349,11 @@ static inline void mi_atomic_maxi64_relaxed(volatile _Atomic(int64_t)* p, int64_
 }
 
 static inline void mi_atomic_addi64_acq_rel(volatile _Atomic(int64_t)* p, int64_t i) {
-  mi_atomic_addi64_relaxed(p, i);
+  mi_atomic_volatile_addi64_relaxed(p, i);
+}
+
+static inline int64_t mi_atomic_addi64_relaxed(volatile _Atomic(int64_t)* p, int64_t i) {
+  return mi_atomic_volatile_addi64_relaxed(p, i);
 }
 
 static inline bool mi_atomic_casi64_strong_acq_rel(volatile _Atomic(int64_t)* p, int64_t* exp, int64_t des) {
@@ -375,17 +388,24 @@ static inline bool mi_atomic_casi64_strong_acq_rel(volatile _Atomic(int64_t)* p,
 
 #endif
 
-
-// Atomically add a signed value; returns the previous value.
-static inline intptr_t mi_atomic_addi(_Atomic(intptr_t)*p, intptr_t add) {
-  return (intptr_t)mi_atomic_add_acq_rel((_Atomic(uintptr_t)*)p, (uintptr_t)add);
+static inline mi_ssize_t mi_atomic_addi_acq_rel(_Atomic(mi_ssize_t)*p, mi_ssize_t add) {
+  return (mi_ssize_t)mi_atomic_add_acq_rel((_Atomic(size_t)*)p, (size_t)add);
 }
-
-// Atomically subtract a signed value; returns the previous value.
-static inline intptr_t mi_atomic_subi(_Atomic(intptr_t)*p, intptr_t sub) {
-  return (intptr_t)mi_atomic_addi(p, -sub);
+static inline mi_ssize_t mi_atomic_subi_acq_rel(_Atomic(mi_ssize_t)*p, mi_ssize_t sub) {
+  return (mi_ssize_t)mi_atomic_addi_acq_rel(p, -sub);
 }
-
+static inline mi_ssize_t mi_atomic_addi_relaxed(_Atomic(mi_ssize_t)*p, mi_ssize_t add) {
+  return (mi_ssize_t)mi_atomic_add_relaxed((_Atomic(size_t)*)p, (size_t)add);
+}
+static inline mi_ssize_t mi_atomic_subi_relaxed(_Atomic(mi_ssize_t)*p, mi_ssize_t sub) {
+  return (mi_ssize_t)mi_atomic_addi_relaxed(p, -sub);
+}
+static inline void mi_atomic_storess_relaxed(_Atomic(mi_ssize_t)* p, mi_ssize_t x) {
+  mi_atomic_store_relaxed((_Atomic(size_t)*)p, (size_t)x);
+}
+static inline mi_ssize_t mi_atomic_loads_relaxed(_Atomic(mi_ssize_t)* p) {
+  return (mi_ssize_t)mi_atomic_load_relaxed((_Atomic(size_t)*)p);
+}
 
 // ----------------------------------------------------------------------
 // Guard

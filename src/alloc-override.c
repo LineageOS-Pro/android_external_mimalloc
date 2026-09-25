@@ -225,7 +225,8 @@ typedef void* mi_nothrow_t;
   #endif
 #endif
 
-#if (defined(__GNUC__) || defined(__clang__)) && !defined(__APPLE__)
+// on macOS export the C++ operators too: interposing them does not work, but as weak definitions an exported one wins.
+#if (defined(__GNUC__) || defined(__clang__))
 #pragma GCC visibility push(default)
 #endif
 
@@ -293,7 +294,7 @@ typedef void* mi_nothrow_t;
   void _ZdlPvSt11align_val_tRKSt9nothrow_t(void* p, size_t al, mi_nothrow_t tag) { MI_UNUSED(tag); mi_free_aligned(p,al); } // operator delete(void*, std::align_val_t, std::nothrow_t const&)
   void _ZdaPvSt11align_val_tRKSt9nothrow_t(void* p, size_t al, mi_nothrow_t tag) { MI_UNUSED(tag); mi_free_aligned(p,al); } // operator delete[](void*, std::align_val_t, std::nothrow_t const&)
 
-  #if (MI_INTPTR_SIZE==8) || (MI_INTPTR_SIZE==4 && defined(__EMSCRIPTEN__))  // pr #1257
+  #if (MI_SIZE_SIZE==8) || (MI_SIZE_SIZE==4 && defined(__EMSCRIPTEN__))  // pr #1257
     void* _Znwm(size_t n)                             MI_FORWARD1(mi_new,n)  // new 64-bit
     void* _Znam(size_t n)                             MI_FORWARD1(mi_new,n)  // new[] 64-bit
     void* _ZnwmRKSt9nothrow_t(size_t n, mi_nothrow_t tag) { MI_UNUSED(tag); return mi_new_nothrow(n); }
@@ -302,7 +303,7 @@ typedef void* mi_nothrow_t;
     void* _ZnamSt11align_val_t(size_t n, size_t al)   MI_FORWARD2(mi_new_aligned, n, al)
     void* _ZnwmSt11align_val_tRKSt9nothrow_t(size_t n, size_t al, mi_nothrow_t tag) { MI_UNUSED(tag); return mi_new_aligned_nothrow(n,al); }
     void* _ZnamSt11align_val_tRKSt9nothrow_t(size_t n, size_t al, mi_nothrow_t tag) { MI_UNUSED(tag); return mi_new_aligned_nothrow(n,al); }
-  #elif (MI_INTPTR_SIZE==4)
+  #elif (MI_SIZE_SIZE==4)
     void* _Znwj(size_t n)                             MI_FORWARD1(mi_new,n)  // new 64-bit
     void* _Znaj(size_t n)                             MI_FORWARD1(mi_new,n)  // new[] 64-bit
     void* _ZnwjRKSt9nothrow_t(size_t n, mi_nothrow_t tag) { MI_UNUSED(tag); return mi_new_nothrow(n); }
@@ -400,7 +401,7 @@ mi_decl_weak int reallocarr(void* p, size_t count, size_t size)    { return mi_r
 }
 #endif
 
-#if (defined(__GNUC__) || defined(__clang__)) && !defined(__APPLE__)
+#if (defined(__GNUC__) || defined(__clang__))
 #pragma GCC visibility pop
 #endif
 

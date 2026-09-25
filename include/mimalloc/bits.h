@@ -18,6 +18,14 @@ terms of the MIT license. A copy of the license can be found in the file
 #include <stdbool.h>  // bool
 #include <limits.h>   // LONG_MAX
 
+#if defined(__cplusplus)
+#define mi_decl_externc         extern "C"
+#define mi_init_struct_zero     { }
+#else
+#define mi_decl_externc
+#define mi_init_struct_zero     { 0 }
+#endif
+
 // ------------------------------------------------------
 // Size of a pointer.
 // We assume that `sizeof(void*)==sizeof(intptr_t)`
@@ -49,9 +57,11 @@ terms of the MIT license. A copy of the license can be found in the file
 #if SIZE_MAX == UINT64_MAX
 # define MI_SIZE_SHIFT (3)
 typedef int64_t  mi_ssize_t;
+#define MI_SSIZE_MAX  INT64_MAX
 #elif SIZE_MAX == UINT32_MAX
 # define MI_SIZE_SHIFT (2)
 typedef int32_t  mi_ssize_t;
+#define MI_SSIZE_MAX  INT32_MAX
 #else
 #error platform objects must be 32 or 64 bits in size
 #endif

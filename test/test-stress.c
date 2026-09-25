@@ -25,6 +25,16 @@ terms of the MIT license.
 #include <mimalloc.h>
 #include <mimalloc-stats.h>
 
+#ifdef TEST_STRESS_PPROF
+#include <mimalloc-profile.h>
+
+
+#define TEST_STRESS_PPROF_THRESHOLD  (64 * 1024)
+#define TEST_STRESS_PPROF_BASE_NAME  "test-stress-pprof-profile"
+
+static mi_profiler_t* stress_pprof_profiler = NULL;
+#endif
+
 // #define MI_GUARDED         1
 // #define USE_STD_MALLOC     1
 
@@ -42,10 +52,14 @@ terms of the MIT license.
 // > mimalloc-test-stress [THREADS] [SCALE] [ITER]
 //
 // argument defaults
-#if defined(MI_TSAN)          // with thread-sanitizer reduce the threads to test within the azure pipeline limits
+#if defined(MI_TSAN) && MI_TEST_LIGHT         // with thread-sanitizer reduce the threads to test within the azure pipeline limits
 static int THREADS = NTHREADS/4;
 static int SCALE   = 10;
-static int ITER    = 300;
+static int ITER    = 100;
+#elif defined(MI_TSAN)          // with thread-sanitizer reduce the threads to test within the azure pipeline limits
+static int THREADS = NTHREADS/4;
+static int SCALE   = 25;
+static int ITER    = 500;
 #elif defined(MI_UBSAN)       // with undefined behavious sanitizer reduce parameters to stay within the azure pipeline limits
 static int THREADS = NTHREADS/4;
 static int SCALE   = 25;
@@ -305,6 +319,13 @@ static void test_stress(mi_subproc_id_t subproc) {
       }
     }
 
+    #ifdef TEST_STRESS_PPROF
+    // take a profile snapshot in between each iteration
+    if (stress_pprof_profiler != NULL) {
+      mi_profiler_snapshot(stress_pprof_profiler);
+    }
+    #endif
+
     #if !defined(NDEBUG) || defined(MI_TSAN)
     if ((n + 1) % 10 == 0) {
       printf("- iterations left: %3d\n", ITER - (n + 1));
@@ -399,7 +420,7 @@ int main(int argc, char** argv) {
   #endif  
   #if !defined(NDEBUG) && !defined(USE_STD_MALLOC)
     mi_option_set(mi_option_arena_reserve, (long)(mi_arena_min_size()/1024) /* in KiB ! */);
-    mi_option_set(mi_option_purge_delay,1);
+    // mi_option_set(mi_option_purge_delay,1);
   #endif
   #if defined(NDEBUG) && !defined(USE_STD_MALLOC)
     // mi_option_set(mi_option_purge_delay,-1);
@@ -444,6 +465,13 @@ int main(int argc, char** argv) {
   // Run ITER full iterations where half the objects in the transfer buffer survive to the next round.
   srand(0x7feb352d);
   // mi_stats_reset();
+  #ifdef TEST_STRESS_PPROF
+  stress_pprof_profiler = mi_pprof_profiler_new(TEST_STRESS_PPROF_THRESHOLD, TEST_STRESS_PPROF_BASE_NAME, 0, 0, 0);
+  if (stress_pprof_profiler != NULL) {
+    mi_profile(stress_pprof_profiler);
+    mi_profiler_start(stress_pprof_profiler);
+  }
+  #endif
 #if TEST_STRESS_SUBPROCS && !defined(USE_STD_MALLOC)
     test_stress_subprocs();
 #elif TEST_STRESS
@@ -451,6 +479,15 @@ int main(int argc, char** argv) {
 #elif TEST_LEAK
     test_leak();
 #endif
+  #ifdef TEST_STRESS_PPROF
+  if (stress_pprof_profiler != NULL) {
+    mi_profiler_snapshot(stress_pprof_profiler);  // one final snapshot after everything is freed
+    mi_profiler_stop(stress_pprof_profiler);
+    mi_profile(NULL);  // unregister before deleting
+    mi_pprof_profiler_delete(stress_pprof_profiler);
+    stress_pprof_profiler = NULL;
+  }
+  #endif
 
 #ifndef USE_STD_MALLOC
   #ifndef NDEBUG
@@ -463,7 +500,7 @@ int main(int argc, char** argv) {
   //  mi_free(json);
   //}
   #endif
-  mi_collect(true);
+  // mi_collect(true);
   mi_stats_print(NULL);
 #endif
   //bench_end_program();
