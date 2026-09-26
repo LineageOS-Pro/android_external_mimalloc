@@ -65,6 +65,8 @@ cc_library_static {
         "src/page.c",
         "src/page-map.c",
         "src/random.c",
+        "src/sample-guarded.c",
+        "src/sample-profile.c",
         "src/stats.c",
         "src/subproc.c",
         "src/theap.c",
@@ -92,6 +94,18 @@ cc_library_static {
         // (MALLOC_ZERO_CONTENTS) and vendor libraries rely on that behaviour;
         // mirror it for bionic integration.
         "-DMI_ZERO_CONTENTS=1",
+        // MI_GUARDED is 0 by default (MI_DEBUG=0), but state it explicitly so
+        // a future change cannot enable guard pages in the device image.  With
+        // it off, the guarded-only sampling paths in sample-guarded.c and the
+        // guarded init in theap.c stay inert.
+        "-DMI_GUARDED=0",
+        // Turn off the mimalloc pprof sampler/profiler for the device build:
+        // with MI_PROFILE=0 the sampler paths in page.c/free.c are compiled
+        // out, and the _mi_pprof_profiler_init/_done call sites in init.c
+        // resolve to the empty stubs in pprof.c's !MI_PROFILE_USE_BUILTIN
+        // block.  The remaining profile bookkeeping (e.g.
+        // _mi_theap_set_profile_sample_rate) stays compiled and harmless.
+        "-DMI_PROFILE=0",
     ],
 
     export_include_dirs: ["include"],
