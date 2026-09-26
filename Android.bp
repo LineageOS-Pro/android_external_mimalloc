@@ -106,13 +106,17 @@ cc_library_static {
         // it off, the guarded-only sampling paths in sample-guarded.c and the
         // guarded init in theap.c stay inert.
         "-DMI_GUARDED=0",
-        // Turn off the mimalloc pprof sampler/profiler for the device build:
-        // with MI_PROFILE=0 the sampler paths in page.c/free.c are compiled
-        // out, and the _mi_pprof_profiler_init/_done call sites in init.c
-        // resolve to the empty stubs in pprof.c's !MI_PROFILE_USE_BUILTIN
-        // block.  The remaining profile bookkeeping (e.g.
-        // _mi_theap_set_profile_sample_rate) stays compiled and harmless.
-        "-DMI_PROFILE=0",
+        // Keep the pprof profiler compiled with MI_PROFILE at its default (1):
+        // the dev3 refactor references _mi_pprof_profiler_init/_done from
+        // init.c unconditionally, so pprof.c must always be linked into
+        // libmimalloc.  With MI_PROFILE=1 pprof.c builds its baked-in branch
+        // and mi_prim_backtrace falls back to the depth-0 stub on Android
+        // (no execinfo.h/libunwind.h in the bionic toolchain), so no extra
+        // link deps are pulled in.  Setting MI_PROFILE=0 instead hits a known
+        // signature conflict between pprof.c's unconditional forward decl
+        // (line ~107) and its !MI_PROFILE_USE_BUILTIN stub, which does not
+        // compile under -Werror.
+        "-DMI_PROFILE=1",
     ],
 
     export_include_dirs: ["include"],
