@@ -73,6 +73,13 @@ cc_library_static {
         "src/threadlocal.c",
         "src/prim/prim.c",
         "src/prim/prim-tls.c",
+        // init.c unconditionally calls _mi_pprof_profiler_init/_done (see
+        // src/init.c).  With MI_PROFILE=0 this file compiles to empty stubs
+        // (see src/profile/pprof.c's #if MI_PROFILE_USE_BUILTIN fallback),
+        // so the device image does not pull in the real pprof profiler
+        // (libunwind/execinfo backtraces, snapshot file writing) while
+        // still satisfying the linker.
+        "src/profile/pprof.c",
     ],
 
     cflags: [
