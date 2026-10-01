@@ -99,7 +99,10 @@ cc_library_static {
         "-Wno-error=date-time",
         // Android's default allocator (scudo) zero-fills new allocations
         // (MALLOC_ZERO_CONTENTS) and vendor libraries rely on that behaviour;
-        // mirror it for bionic integration.
+        // mirror it for bionic integration.  This is the build-side switch that
+        // activates the MI_ZERO_CONTENTS zero-fill path wired through
+        // src/alloc.c / src/alloc-aligned.c; keep it in sync with those
+        // consumers if the macro name ever changes.
         "-DMI_ZERO_CONTENTS=1",
         // MI_GUARDED is 0 by default (MI_DEBUG=0), but state it explicitly so
         // a future change cannot enable guard pages in the device image.  With
